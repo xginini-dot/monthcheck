@@ -103,6 +103,17 @@
   .error{background:#fff4f3;border:1px solid #ffb4ab;color:#9b1c12;padding:12px;border-radius:12px;margin-top:12px}
   .ok{background:#f2fbf3;border:1px solid #bbe4bf;color:#286134;padding:12px;border-radius:12px;margin-top:12px}
   .footer-note{text-align:center;color:#91877d;font-size:12px;margin-top:30px}
+
+  .compare-title{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+  .compare-title h2{margin:0;font-size:21px;letter-spacing:-.04em}
+  .compare-table{min-width:1120px;border:1px solid #111}
+  .compare-table th{background:#e6efdf;border:1px solid #111;padding:9px 8px;font-size:17px;font-weight:950;text-align:center;color:#111}
+  .compare-table td{border:1px solid #111;padding:8px 8px;text-align:center;font-size:16px;font-weight:850;background:#fff}
+  .compare-table tbody tr:nth-child(odd) td{background:#d9d9d9}
+  .compare-table td.item{text-align:center;font-weight:950}
+  .compare-table td.month{width:92px;background:#f7f7f7}
+  .compare-table td.diff{width:104px;font-weight:950}
+  .compare-help{font-size:12px;color:#7b7168;line-height:1.7;margin:10px 0 0}
   @media(max-width:900px){
     .upload{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}.wrap{padding:22px 10px 50px}
     .main th,.main td{font-size:12px;padding:8px 4px}.main td.name{font-size:11px}
@@ -129,8 +140,10 @@
       <button class="btn2" onclick="downloadCSV()">CSV 다운로드</button>
       <button class="btn2" onclick="copyTable()">표 복사</button>
       <button class="btn2" onclick="toggleAllCodes()">전체 코드표 보기</button>
+      <button class="btn2" onclick="scrollCompare()">처방항목 비교표 보기</button>
+      <button class="btn2" onclick="downloadCompareCSV()">처방항목 CSV</button>
     </div>
-    <div class="notice">수정 반영: LA201~LA379 리스트 전체 적용, LA346/LA347 포함, AxillaryNB/RadMedU/MBB/Facet/SNRB/DRG/SIJ 등 약어 매칭, 명칭 일부 포함 매칭, 미매칭 행 출력 기능을 추가했습니다.</div>
+    <div class="notice">수정 반영: LA201~LA379 리스트 전체 적용, LA346/LA347 포함, AxillaryNB/RadMedU/MBB/Facet/SNRB/DRG/SIJ 등 약어 매칭, 명칭 일부 포함 매칭, 미매칭 행 출력 기능 및 월별 처방항목 비교표를 추가했습니다.</div>
     <div id="msg"></div>
   </div>
   <div class="cards">
@@ -141,6 +154,28 @@
   </div>
   <div class="table-wrap"><table class="main" id="resultTable"><thead><tr><th style="width:90px">코드</th><th>처방명칭</th><th style="width:110px">총투여량</th><th style="width:160px">총액</th><th style="width:90px">비율</th><th style="width:170px">전달 대비<br>금액</th></tr></thead><tbody></tbody></table></div>
   <div class="small" id="foot"></div>
+
+  <div class="section" id="compareSec">
+    <div class="compare-title">
+      <h2>월별 처방항목 비교표</h2>
+      <span class="pill">전월 파일 + 이번달 파일 업로드 시 자동 비교</span>
+    </div>
+    <div class="table-wrap">
+      <table class="compare-table" id="compareTable">
+        <thead>
+          <tr>
+            <th>처방 항목</th><th id="prevMonthHead">전월</th>
+            <th>처방 항목</th><th id="curMonthHead">이번달</th><th>전월대비</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="compare-help">
+      코드가 병원별로 다른 경우에도 대표 코드와 키워드로 합산합니다. EB462~EB470, HJ709~HJ713, F6100/F6101, KK061/KK062, NCS, 자보도수, 수액 등은 별도 항목으로 비교됩니다.
+    </div>
+  </div>
+
   <div class="section" id="unmatchedSec"><h2>미매칭 데이터</h2><table class="mini" id="unmatchedTable"><thead><tr><th>원본 코드</th><th>원본 명칭</th><th>소모량</th><th>금액</th><th>비고</th></tr></thead><tbody></tbody></table></div>
   <div class="section hide" id="allCodeSec"><h2>전체 매칭 코드표</h2><table class="mini" id="codeTable"><thead><tr><th>코드</th><th>명칭</th><th>단가</th><th>대표 키워드/약어</th></tr></thead><tbody></tbody></table></div>
 </div>
@@ -155,6 +190,27 @@ const ALIAS = [
  ['LA261',['교감신경총','신경절차단(간단','간단한 것']],['LA264',['CELIAC','복강신경총']],['LA265',['INFERIORMESENTERIC','하장간막신경총']],['LA361',['THORACICSYMPATHETIC','흉부교감신경절']],['LA362',['LUMBARSYMPATHETIC','요부교감신경절']],['LA366',['SUPERIORHYPOGASTRIC','상하복신경총']],['LA367',['GANGLIONIMPAR','IMPAR','외톨이신경절']],
  ['LA321',['경추 및 흉추','경추/흉추']],['LA323',['요추 및 천추','요추/천추']],['LA324',['미추']],['LA325',['경추간공차단(경추','경추간공차단 경추']],['LA326',['경추간공차단(요추','경추간공차단 요추']]
 ];
+
+const COMPARE_GROUPS = [
+  { name:'T6163 (반창고 부착술 : 팔꿈치, 무릎, 손목, 발목)', codes:['T6163'] },
+  { name:'T6162 (반창고 부착술 : 어깨, 고관절)', codes:['T6162'] },
+  { name:'T6161 (반창고 부착술 : 흉곽, 요추부)', codes:['T6161'] },
+  { name:'EB461 (초음파 검사 : 손가락, 류마티스)', codes:['EB461'] },
+  { name:'EB462 ~ EB470 (초음파 검사)', codes:['EB462','EB463','EB464','EB465','EB466','EB467','EB468','EB469','EB470'] },
+  { name:'F6100 (신경학적 검사 단순)', codes:['F6100'] },
+  { name:'F6101 (신경학적 검사 일반)', codes:['F6101'] },
+  { name:'HJ709 ~ HJ713 (MRI 판독료)', codes:['HJ709','HJ710','HJ711','HJ712','HJ713'] },
+  { name:'MM132 (TPI 주사)', codes:['MM132'] },
+  { name:'MM131 (TPI 주사)', codes:['MM131'] },
+  { name:'KK061 / KK062 (신경간내 주사, 건초내 주사)', codes:['KK061','KK062'], keywords:['신경간내','건초내'] },
+  { name:'신경전도 검사 (NCS)', keywords:['신경전도','NCS','NERVE CONDUCTION','NERVECONDUCTION'] },
+  { name:'MM101 단순운동치료', codes:['MM101'], keywords:['단순운동치료'] },
+  { name:'자동차 보험 도수치료', keywords:['자동차보험도수','자보도수','도수치료자보','자동차보험 도수','자보 도수'] },
+  { name:'이온 냉각치료', keywords:['이온냉각','이온 냉각','냉각치료','크라이오','CRYO'] },
+  { name:'신장분사 치료', keywords:['신장분사','신장분사치료','분사치료'] },
+  { name:'수액', keywords:['수액','IV','영양수액','비타민수액','면역수액'] }
+];
+let lastCompareRows=[];
 let onlyUsed=true, lastRows=[], lastUnmatched=[];
 function norm(v){return String(v??'').toUpperCase().replace(/\s+/g,'').replace(/[·ㆍ\-_/()\[\],.]/g,'');}
 function num(v){ if(v===null||v===undefined||v==='') return 0; let s=String(v).replace(/,/g,'').replace(/원/g,'').trim(); let n=parseFloat(s); return isNaN(n)?0:n; }
@@ -188,7 +244,11 @@ function parseRows(rows){
 }
 async function run(){
   const cur=await readFile(document.getElementById('curFile').files[0]); if(!cur){msg('<div class="error">이번달 엑셀 파일을 선택해주세요.</div>'); return;}
-  const prev=await readFile(document.getElementById('prevFile').files[0]); const curP=parseRows(cur); const prevP=parseRows(prev); lastUnmatched=curP.unmatched; render(curP.sum, prevP.sum||{}); msg('<div class="ok">계산 완료: 사용된 LA코드와 미매칭 데이터를 함께 확인해주세요.</div>');
+  const prev=await readFile(document.getElementById('prevFile').files[0]);
+  const curP=parseRows(cur); const prevP=parseRows(prev);
+  lastUnmatched=curP.unmatched; render(curP.sum, prevP.sum||{});
+  renderCompare(parseCompareRows(prev), parseCompareRows(cur));
+  msg('<div class="ok">계산 완료: LA 통계와 월별 처방항목 비교표를 함께 확인해주세요.</div>');
 }
 function render(sum, prevSum){
   const tbody=document.querySelector('#resultTable tbody'); tbody.innerHTML=''; const total=Object.values(sum).reduce((a,b)=>a+b.amount,0); const totalQty=Object.values(sum).reduce((a,b)=>a+b.qty,0); const prevTotal=Object.values(prevSum||{}).reduce((a,b)=>a+b.amount,0);
@@ -199,6 +259,54 @@ function render(sum, prevSum){
   document.getElementById('totalQty').textContent=fmt(totalQty,totalQty%1?1:0); document.getElementById('totalAmt').textContent=fmt(total); document.getElementById('usedCnt').textContent=Object.keys(sum).filter(c=>sum[c].amount>0).length+'개'; document.getElementById('diffAmt').textContent=(total-prevTotal<0?'▼':'▲')+fmt(Math.abs(total-prevTotal));
   renderUnmatched(); document.getElementById('foot').innerHTML=`인식 제외 행: ${lastUnmatched.length}건<br>예: AxillaryNB → LA346 액와신경 / RadMedU → LA347 액와하부신경 / MBB → LA358 / FACET → LA359 / SNRB → LA354 / DRG → LA355`;
 }
+
+function matchCompareGroup(rawCode, rawName){
+  const text=norm((rawCode||'')+' '+(rawName||''));
+  const code=norm(rawCode||'');
+  for(const g of COMPARE_GROUPS){
+    if(g.codes){ for(const c of g.codes){ const nc=norm(c); if(code===nc || text.includes(nc)) return g.name; } }
+    if(g.keywords){ for(const k of g.keywords){ if(text.includes(norm(k))) return g.name; } }
+  }
+  return null;
+}
+function parseCompareRows(rows){
+  const out={}; COMPARE_GROUPS.forEach(g=>out[g.name]=0);
+  if(!rows) return out;
+  const hi=findHeader(rows); const header=rows[hi]||[];
+  const ciCode=colIndex(header,['코드','처방코드','수가코드']);
+  const ciName=colIndex(header,['코드명칭','명칭','처방명칭','처방명','항목']);
+  const ciQty=colIndex(header,['소모량','총투여량','수량','횟수','건수']);
+  for(let r=hi+1;r<rows.length;r++){
+    const row=rows[r]||[];
+    const rawCode=ciCode>=0?row[ciCode]:'';
+    const rawName=ciName>=0?row[ciName]:row.join(' ');
+    if(!String(rawCode||rawName).trim()) continue;
+    if(String(rawCode).includes('소계')||String(rawCode).includes('합계')||String(rawName).includes('소계')||String(rawName).includes('합계')) continue;
+    const g=matchCompareGroup(rawCode, rawName);
+    if(!g) continue;
+    let qty=ciQty>=0?num(row[ciQty]):0;
+    if(!qty) qty=1;
+    out[g]+=qty;
+  }
+  return out;
+}
+function renderCompare(prev, cur){
+  const tb=document.querySelector('#compareTable tbody'); if(!tb) return; tb.innerHTML=''; lastCompareRows=[];
+  COMPARE_GROUPS.forEach(g=>{
+    const p=prev?.[g.name]||0, c=cur?.[g.name]||0, d=c-p;
+    lastCompareRows.push([g.name,p,c,d]);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="item">${g.name}</td><td class="month">${fmt(p,p%1?1:0)}</td><td class="item">${g.name}</td><td class="month">${fmt(c,c%1?1:0)}</td><td class="diff ${d<0?'red':'blue'}">${d===0?'':(d>0?fmt(d,d%1?1:0)+'건':'-'+fmt(Math.abs(d),Math.abs(d)%1?1:0)+'건')}</td>`;
+    tb.appendChild(tr);
+  });
+}
+function scrollCompare(){document.getElementById('compareSec')?.scrollIntoView({behavior:'smooth',block:'start'});}
+function downloadCompareCSV(){
+  if(!lastCompareRows.length){msg('<div class="error">먼저 통계 계산을 실행해주세요.</div>');return;}
+  let csv='처방항목,전월,이번달,전월대비\n'+lastCompareRows.map(r=>`"${r[0]}",${r[1]},${r[2]},${r[3]}`).join('\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='월별_처방항목_비교표.csv'; a.click();
+}
+
 function renderUnmatched(){ const tb=document.querySelector('#unmatchedTable tbody'); tb.innerHTML=''; if(lastUnmatched.length===0){tb.innerHTML='<tr><td colspan="5" style="text-align:center;color:#667085">미매칭 데이터가 없습니다.</td></tr>';return;} lastUnmatched.forEach(x=>{const tr=document.createElement('tr'); tr.innerHTML=`<td>${x.rawCode||''}</td><td>${x.rawName||''}</td><td class="right">${fmt(x.qty,x.qty%1?1:0)}</td><td class="right">${fmt(x.amount)}</td><td>${x.why}</td>`;tb.appendChild(tr);});}
 function msg(html){document.getElementById('msg').innerHTML=html;}
 function toggleCodes(){onlyUsed=!onlyUsed; document.querySelector('.btn2').textContent=(onlyUsed?'☑':'☐')+' 사용 코드만 보기'; const f=document.getElementById('curFile').files[0]; if(f) run();}
