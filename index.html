@@ -659,6 +659,196 @@ run = async function(){
   msg('<div class="ok">계산 완료: LA 통계, 월별 처방항목 비교표, 매칭 검토 리스트를 확인해주세요.</div>');
 };
 
+
+
+/* =========================================================
+   자동 엑셀 형식 인식 보강 v4
+   - 기존 집계형 엑셀: 코드/명칭/총횟수 중심
+   - 신규 상세형 엑셀: 처방코드/처방명칭/차트번호/성명/처방일자/총투여량 중심
+   - 신경전도: 상세형은 동일 환자+같은 날짜+상/하지 1건, 집계형은 운동/감각 코드 중 최대값
+   ========================================================= */
+function headerNorm(v){ return String(v??'').toUpperCase().replace(/\s+/g,'').replace(/[·ㆍ\-_/()\[\],.]/g,''); }
+function findHeader(rows){
+  const keys=['처방코드','수가코드','코드','처방명칭','처방명','코드명칭','명칭','총횟수','총투여량','차트번호','챠트번호','성명','처방일자','금액'];
+  let best=0, bestScore=-1;
+  for(let i=0;i<Math.min(rows?.length||0,50);i++){
+    const row=rows[i]||[];
+    let score=0;
+    row.forEach(x=>{ const hx=headerNorm(x); keys.forEach(k=>{ if(hx.includes(headerNorm(k))) score++; }); });
+    if(score>bestScore){ bestScore=score; best=i; }
+    if(score>=3) return i;
+  }
+  return best;
+}
+function colIndex(header, candidates){
+  const hs=(header||[]).map(h=>headerNorm(h));
+  for(const c of candidates){
+    const cn=headerNorm(c);
+    let idx=hs.findIndex(h=>h===cn);
+    if(idx>=0) return idx;
+    idx=hs.findIndex(h=>h.includes(cn));
+    if(idx>=0) return idx;
+  }
+  return -1;
+}
+function detectExcelType(header){
+  const hasCode = colIndex(header,['처방코드','수가코드','코드'])>=0;
+  const hasName = colIndex(header,['처방명칭','처방명','코드명칭','명칭','항목'])>=0;
+  const hasPatient = colIndex(header,['챠트번호','차트번호','환자번호','등록번호','수진자번호','성명','수진자명','환자명'])>=0;
+  const hasDate = colIndex(header,['처방일자','내원일','진료일','처방일','시행일','일자','날짜'])>=0;
+  const hasAgg = colIndex(header,['총횟수','횟수','건수','총소모량','소모량'])>=0;
+  if(hasCode && hasName && (hasPatient || hasDate)) return '상세형';
+  if(hasCode && hasName && hasAgg) return '집계형';
+  return '자동';
+}
+function baseCompareCode(rawCode){
+  const s=headerNorm(rawCode||'');
+  const m=s.match(/^([A-Z]{1,3}\d{3,4}|\d{5})/);
+  return m ? m[1] : s;
+}
+function codeMatches(rawCode, target){
+  const code=baseCompareCode(rawCode||'');
+  const t=baseCompareCode(target||'');
+  if(!code || !t) return false;
+  return code===t || code.startsWith(t);
+}
+function rowTextNorm(rawCode, rawName){ return headerNorm((rawCode||'')+' '+(rawName||'')); }
+function isExcludedNcs(rawCode, rawName){
+  const c=baseCompareCode(rawCode);
+  const t=rowTextNorm(rawCode, rawName);
+  return /^FY(687|688|689|862)/.test(c) || t.includes('F파신경전도') || t.includes('H반사') || t.includes('기타신경전도검사') || t.includes('F파') || t.includes('HREFLEX');
+}
+function getGroupByCode(rawCode){
+  const base=baseCompareCode(rawCode);
+  if(!base) return null;
+  for(const g of ENGINE_GROUPS){
+    for(const c of (g.codes||[])){
+      if(codeMatches(base,c)) return {group:g, method:'코드'};
+    }
+  }
+  return null;
+}
+function getGroupByName(rawCode, rawName){
+  const t=rowTextNorm(rawCode, rawName);
+  for(const g of ENGINE_GROUPS){
+    if(g.blank) continue;
+    if(typeof g.fallback==='function' && g.fallback(t)) return {group:g, method:'명칭'};
+  }
+  return null;
+}
+function matchCompareGroupV3(rawCode, rawName){
+  if(isExcludedNcs(rawCode, rawName)) return null;
+  return getGroupByCode(rawCode) || getGroupByName(rawCode, rawName);
+}
+function getCompareQtyV3(row, header, sheetType='자동'){
+  const detailKeys=['총투여량','총소모량','소모량','수량'];
+  const aggregateKeys=['총횟수','횟수','건수','총투여일수','총투여량','총소모량','소모량','수량'];
+  const keys = sheetType==='상세형' ? detailKeys : aggregateKeys;
+  for(const key of keys){
+    const idx=colIndex(header,[key]);
+    if(idx>=0){ const v=num(row[idx]); if(v!==0) return v; }
+  }
+  return 1;
+}
+function getPatientDateKey(row, header){
+  const ciChart=colIndex(header,['챠트번호','차트번호','환자번호','등록번호','수진자번호','환자ID','ID']);
+  const ciName=colIndex(header,['수진자명','환자명','성명','이름']);
+  const ciDate=colIndex(header,['처방일자','내원일','진료일','처방일','시행일','일자','날짜']);
+  const p = ciChart>=0 ? row[ciChart] : (ciName>=0 ? row[ciName] : '');
+  const d = ciDate>=0 ? row[ciDate] : '';
+  if(String(p||'').trim() && String(d||'').trim()) return headerNorm(p)+'|'+headerNorm(d);
+  if(String(p||'').trim()) return headerNorm(p)+'|날짜없음';
+  return null;
+}
+function parseRows(rows){
+  if(!rows) return {sum:{},unmatched:[], type:'없음'};
+  const hi=findHeader(rows); const header=rows[hi]||[]; const sheetType=detectExcelType(header);
+  const ciCode=colIndex(header,['처방코드','수가코드','코드']);
+  const ciName=colIndex(header,['처방명칭','처방명','코드명칭','명칭','항목']);
+  const ciQty=colIndex(header, sheetType==='상세형' ? ['총투여량','총소모량','소모량','수량'] : ['총횟수','횟수','건수','총투여량','총소모량','소모량','수량']);
+  const ciAmt=colIndex(header,['총금액','금액','총액']);
+  const sum={}, unmatched=[];
+  for(let r=hi+1;r<rows.length;r++){
+    const row=rows[r]||[];
+    const rawCode=ciCode>=0?row[ciCode]:'';
+    const rawName=ciName>=0?row[ciName]:row.join(' ');
+    if(!String(rawCode||rawName).trim()) continue;
+    if(String(rawCode).includes('소계')||String(rawCode).includes('합계')||String(rawName).includes('소계')||String(rawName).includes('합계')||String(rawCode).includes('◀')) continue;
+    const qty=num(ciQty>=0?row[ciQty]:1);
+    const amtRaw=num(ciAmt>=0?row[ciAmt]:0);
+    if(qty===0 && amtRaw===0) continue;
+    const la=mapCode(rawCode,rawName);
+    if(la){
+      if(!sum[la]) sum[la]={qty:0,amount:0,source:[]};
+      const price=LA[la][1]; const amt=amtRaw || qty*price;
+      sum[la].qty+=qty; sum[la].amount+=amt; sum[la].source.push({rawCode,rawName,qty,amt});
+    }else{
+      unmatched.push({rawCode,rawName,qty,amount:amtRaw,why:`LA코드/명칭/약어 미매칭 · ${sheetType}`});
+    }
+  }
+  return {sum,unmatched,type:sheetType};
+}
+function parseCompareRows(rows, label=''){
+  const out={}; const ncsBuckets={}; const ncsSets={}; const audit=[];
+  DISPLAY_GROUPS.forEach(g=>{ out[g.name]=g.blank?'':0; if(g.method==='ncsLimb'){ ncsBuckets[g.name]={}; ncsSets[g.name]=new Set(); } });
+  if(!rows) return {sum:out,audit,type:'없음'};
+  const hi=findHeader(rows); const header=rows[hi]||[]; const sheetType=detectExcelType(header);
+  const ciCode=colIndex(header,['처방코드','수가코드','코드']);
+  const ciName=colIndex(header,['처방명칭','처방명','코드명칭','명칭','항목']);
+  for(let r=hi+1;r<rows.length;r++){
+    const row=rows[r]||[];
+    const rawCode=ciCode>=0?row[ciCode]:'';
+    const rawName=ciName>=0?row[ciName]:row.join(' ');
+    if(!String(rawCode||rawName).trim()) continue;
+    if(String(rawCode).includes('소계')||String(rawCode).includes('합계')||String(rawName).includes('소계')||String(rawName).includes('합계')||String(rawCode).includes('◀')) continue;
+    const matched=matchCompareGroupV3(rawCode, rawName);
+    if(!matched) continue;
+    const g=matched.group;
+    if(g.blank) continue;
+    const qty=getCompareQtyV3(row, header, sheetType);
+    let reflected=qty; let note=sheetType;
+    if(g.method==='ncsLimb'){
+      if(sheetType==='상세형'){
+        const patientDateKey=getPatientDateKey(row, header);
+        if(patientDateKey){
+          const key=g.name+'|'+patientDateKey;
+          if(ncsSets[g.name].has(key)){ reflected=0; note='상세형: 동일 환자·날짜 중복 제외'; }
+          else { ncsSets[g.name].add(key); out[g.name]=Number(out[g.name]||0)+1; reflected=1; note='상세형: 동일 환자·날짜 1건 산정'; }
+        }else{
+          out[g.name]=Number(out[g.name]||0)+1; reflected=1; note='상세형: 환자/날짜 없음, 행 1건 산정';
+        }
+      }else{
+        const base=baseCompareCode(rawCode);
+        let bucketKey='명칭';
+        for(const c of (g.codes||[])){ if(codeMatches(base,c)){ bucketKey=c; break; } }
+        ncsBuckets[g.name][bucketKey]=(ncsBuckets[g.name][bucketKey]||0)+qty;
+        reflected=0; note='집계형: 운동/감각 코드별 합계 후 최대값 반영';
+      }
+    }else{
+      out[g.name]=Number(out[g.name]||0)+qty;
+    }
+    audit.push({label, group:g.name, detail:g.display||'', method:matched.method, rawCode, rawName, qty, reflected, note});
+  }
+  Object.keys(ncsBuckets).forEach(name=>{
+    const vals=Object.values(ncsBuckets[name]);
+    if(vals.length){ out[name]=Math.max(...vals); }
+  });
+  audit.forEach(a=>{ if(String(a.note).startsWith('집계형')) a.reflected='검토용'; });
+  return {sum:out,audit,type:sheetType};
+}
+run = async function(){
+  const cur=await readFile(document.getElementById('curFile').files[0]); if(!cur){msg('<div class="error">이번달 엑셀 파일을 선택해주세요.</div>'); return;}
+  const prev=await readFile(document.getElementById('prevFile').files[0]);
+  const curP=parseRows(cur); const prevP=parseRows(prev);
+  lastUnmatched=curP.unmatched; render(curP.sum, prevP.sum||{});
+  const prevC=parseCompareRows(prev,'전월');
+  const curC=parseCompareRows(cur,'이번달');
+  renderCompare(prevC, curC);
+  renderLAAudit(prevP, curP);
+  renderCompareAudit(prevC, curC);
+  msg(`<div class="ok">계산 완료: 전월 ${prevC.type||prevP.type||'자동'} / 이번달 ${curC.type||curP.type||'자동'} 형식으로 자동 인식했습니다.</div>`);
+};
+
 initCodes();
 </script>
 </body>
