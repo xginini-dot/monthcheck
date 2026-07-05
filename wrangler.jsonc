@@ -1,0 +1,8 @@
+{
+  "name": "jinsul-portal",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-05",
+  "assets": {
+    "directory": "."
+  }
+}
